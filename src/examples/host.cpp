@@ -13,7 +13,7 @@ int main() {
     int nr_of_dpus = pimInterface.GetNrOfDPUs();
     const int BUFFER_SIZE = 1024;
     uint8_t broadcast_buf[8];
-    uint64_t checksum_base = 780;
+    uint64_t checksum_base = 781;
     *(uint64_t*)broadcast_buf = checksum_base;
     uint8_t **input_buf = new uint8_t*[nr_of_dpus];
     uint64_t checksum[nr_of_dpus];
@@ -50,6 +50,8 @@ int main() {
     // PIM.MRAM -> CPU : Supported by both direct and UPMEM interface.
     pimInterface.RegisterBufferForReceiveFromPIM(output_buf, "output_buf", 0, 8);
     pimInterface.ReceiveFromPIMRank(0);
+
+    //pimInterface.PrintLog();
 
     // Check
     for (int i = 0; i < nr_of_dpus; i++) {

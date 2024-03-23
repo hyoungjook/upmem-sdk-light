@@ -15,6 +15,7 @@ int main() {
         __dma_aligned uint64_t wram_buf;
 
         mram_read(&broadcast_buf, &wram_buf, 8);
+        uint64_t broadcasted_value = wram_buf;
         checksum += wram_buf;
 
         for (int i = 0; i < BUFFER_SIZE; i++) {
@@ -24,6 +25,8 @@ int main() {
 
         wram_buf = checksum;
         mram_write(&wram_buf, &output_buf, 8);
+
+        printf("bc %lu -> stored %lu\n", broadcasted_value, checksum);
     }
     return 0;
 }

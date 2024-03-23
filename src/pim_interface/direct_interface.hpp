@@ -232,6 +232,8 @@ class DirectPIMInterface {
                 }
             }
         }
+
+        __builtin_ia32_mfence();
     }
 
     void SendToRankMRAM(uint8_t **buffers, uint32_t symbol_offset,
@@ -261,6 +263,7 @@ class DirectPIMInterface {
                         *(((uint64_t *)buffers[j * 8 + dpu_id]) + i);
                 }
                 byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
 
                 offset += 0x40;
                 for (int j = 0; j < 8; j++) {
@@ -271,9 +274,9 @@ class DirectPIMInterface {
                         *(((uint64_t *)buffers[j * 8 + dpu_id + 4]) + i);
                 }
                 byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
             }
         }
-
         __builtin_ia32_mfence();
     }
 
@@ -283,30 +286,26 @@ class DirectPIMInterface {
         assert(aligned(length, sizeof(uint64_t)));
         assert((uint64_t)symbol_offset + length <= MRAM_SIZE);
 
-        uint64_t cache_line[8];
-        // TODO remove further redundancy; now it's just a copy of SendToRankMRAK
+        uint64_t cache_value;
 
-        for (uint32_t dpu_id = 0; dpu_id < 4; ++dpu_id) {
-            for (uint32_t i = 0; i < length / sizeof(uint64_t); ++i) {
-                if ((i % 8 == 0) && (i + 8 < length / sizeof(uint64_t))) {
-                    __builtin_prefetch(
-                        ((uint64_t *)buffer) + i + 8);
-                }
+        for (uint32_t i = 0; i < length / sizeof(uint64_t); ++i) {
+            if ((i % 8 == 0) && (i + 8 < length / sizeof(uint64_t))) {
+                __builtin_prefetch(
+                    ((uint64_t *)buffer) + i + 8);
+            }
+
+            cache_value = *(((uint64_t *)buffer) + i);
+
+            for (uint32_t dpu_id = 0; dpu_id < 4; ++dpu_id) {
                 uint64_t offset =
                     GetCorrectOffsetMRAM(symbol_offset + (i * 8), dpu_id);
-
-                for (int j = 0; j < 8; j++) {
-                    cache_line[j] =
-                        *(((uint64_t *)buffer) + i);
-                }
-                byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                
+                byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
 
                 offset += 0x40;
-                for (int j = 0; j < 8; j++) {
-                    cache_line[j] =
-                        *(((uint64_t *)buffer) + i);
-                }
-                byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
             }
         }
 
@@ -435,6 +434,14 @@ class DirectPIMInterface {
             if (done_cnt == ci_cnt) {
                 break;
             }
+        }
+    }
+
+    void PrintLog() {
+        assert(debuggable);
+        dpu_set_t dpu;
+        DPU_FOREACH(dpu_set, dpu) {
+            DPU_ASSERT(dpu_log_read(dpu, stdout));
         }
     }
 
@@ -620,6 +627,28 @@ class DirectPIMInterface {
 
         __m256i load0 = _mm256_i32gather_epi32((int *)src1, vindex, 1);
         __m256i load1 = _mm256_i32gather_epi32((int *)(src1 + 4), vindex, 1);
+
+        __m256i transpose0 = _mm256_shuffle_epi8(load0, tm);
+        __m256i transpose1 = _mm256_shuffle_epi8(load1, tm);
+
+        __m256i final0 = _mm256_permutevar8x32_epi32(transpose0, perm);
+        __m256i final1 = _mm256_permutevar8x32_epi32(transpose1, perm);
+
+        _mm256_storeu_si256((__m256i *)&dst1[0], final0);
+        _mm256_storeu_si256((__m256i *)&dst1[32], final1);
+    }
+
+    void byte_interleave_avx2_bc(uint64_t input_val, uint64_t *output) {
+        __m256i tm = _mm256_set_epi8(
+            15, 11, 7, 3, 14, 10, 6, 2, 13, 9, 5, 1, 12, 8, 4, 0,
+
+            15, 11, 7, 3, 14, 10, 6, 2, 13, 9, 5, 1, 12, 8, 4, 0);
+        char *src1 = (char *)&input_val, *dst1 = (char *)output;
+
+        __m256i perm = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+
+        __m256i load0 = _mm256_set1_epi32(*(int*)src1);
+        __m256i load1 = _mm256_set1_epi32(*(int*)(src1 + 4));
 
         __m256i transpose0 = _mm256_shuffle_epi8(load0, tm);
         __m256i transpose1 = _mm256_shuffle_epi8(load1, tm);

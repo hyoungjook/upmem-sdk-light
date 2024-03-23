@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 extern "C" {
 #include <dpu.h>
@@ -445,40 +446,35 @@ class DirectPIMInterface {
         }
     }
 
-    /*void ReceiveFromMRAM(uint8_t **buffers, uint32_t symbol_base_offset,
-                         uint32_t symbol_offset, uint32_t length) {
-        assert(DirectAvailable());
-        assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        symbol_offset += symbol_base_offset ^ MRAM_ADDRESS_SPACE;
-        auto ReceiveFromIthRank = [&](size_t i) {
-            DPU_ASSERT(dpu_switch_mux_for_rank(ranks[i], true));
-            ReceiveFromRankMRAM(&buffers[i * MAX_NR_DPUS_PER_RANK],
-                                symbol_offset, base_addrs[i], length);
-        };
+    struct NormalBufferInfo {
+        uint8_t **buffers;
+        uint32_t symbol_offset;
+    };
+    struct BroadcastBufferInfo {
+        uint8_t *buffer;
+        uint32_t symbol_offset;
+    };
 
-        for (size_t i = 0; i < nr_of_ranks; i++) {
-            ReceiveFromIthRank(i);
-        }
-    }
-
-    void ReceiveFromPIM(uint8_t **buffers, std::string symbol_name,
-                        uint32_t symbol_offset, uint32_t length) {
+    size_t RegisterNormalBuffer(uint8_t **buffers, std::string symbol_name,
+                                uint32_t symbol_offset) {
         // Please make sure buffers don't overflow
         assert(DirectAvailable());
 
+        NormalBufferInfo info;
+        info.buffers = (uint8_t**)malloc((MAX_NR_RANKS * MAX_NR_DPUS_PER_RANK) * sizeof(uint8_t));
         uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
-
+        assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
+        info.symbol_offset = symbol_offset + (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
         // Skip disabled PIM modules
-        uint8_t *buffers_alligned[MAX_NR_RANKS * MAX_NR_DPUS_PER_RANK];
         {
             uint32_t offset = 0;
             for (uint32_t i = 0; i < nr_of_ranks; i++) {
                 for (int j = 0; j < MAX_NR_DPUS_PER_RANK; j++) {
                     if (ranks[i]->dpus[j].enabled) {
-                        buffers_alligned[i * MAX_NR_DPUS_PER_RANK + j] =
+                        info.buffers[i * MAX_NR_DPUS_PER_RANK + j] =
                             buffers[offset++];
                     } else {
-                        buffers_alligned[i * MAX_NR_DPUS_PER_RANK + j] =
+                        info.buffers[i * MAX_NR_DPUS_PER_RANK + j] =
                             nullptr;
                     }
                 }
@@ -486,132 +482,45 @@ class DirectPIMInterface {
             assert(offset == nr_of_dpus);
         }
 
-        assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        // Only support heap pointer at present
-        //assert(symbol_name == DPU_MRAM_HEAP_POINTER_NAME);
-        ReceiveFromMRAM(buffers_alligned, symbol_base_offset, symbol_offset,
-                        length);
-    }*/
-
-    void RegisterBufferForReceiveFromPIM(uint8_t **buffers, std::string symbol_name,
-                                         uint32_t symbol_offset, uint32_t length) {
-        // Please make sure buffers don't overflow
-        assert(DirectAvailable());
-        uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
-        assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        recv_buffers_symbol_offset = symbol_offset + (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
-        // Skip disabled PIM modules
-        {
-            uint32_t offset = 0;
-            for (uint32_t i = 0; i < nr_of_ranks; i++) {
-                for (int j = 0; j < MAX_NR_DPUS_PER_RANK; j++) {
-                    if (ranks[i]->dpus[j].enabled) {
-                        recv_buffers_aligned[i * MAX_NR_DPUS_PER_RANK + j] =
-                            buffers[offset++];
-                    } else {
-                        recv_buffers_aligned[i * MAX_NR_DPUS_PER_RANK + j] =
-                            nullptr;
-                    }
-                }
-            }
-            assert(offset == nr_of_dpus);
-        }
-        recv_buffers_length = length;
+        size_t info_handle = normal_buffer_infos.size();
+        normal_buffer_infos.push_back(info);
+        return info_handle;
     }
 
-    void ReceiveFromPIMRank(uint32_t rank_id) {
+    void ReceiveFromPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
         DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
-        ReceiveFromRankMRAM(&recv_buffers_aligned[rank_id * MAX_NR_DPUS_PER_RANK],
-                            recv_buffers_symbol_offset, base_addrs[rank_id], 
-                            recv_buffers_length);
+        NormalBufferInfo &info = normal_buffer_infos[info_handle];
+        ReceiveFromRankMRAM(&info.buffers[rank_id * MAX_NR_DPUS_PER_RANK],
+                            info.symbol_offset, base_addrs[rank_id], length);
     }
 
-    /*void SendToPIM(uint8_t **buffers, std::string symbol_name,
-                   uint32_t symbol_offset, uint32_t length) {
+    void SendToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
+        DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
+        NormalBufferInfo &info = normal_buffer_infos[info_handle];
+        SendToRankMRAM(&info.buffers[rank_id * MAX_NR_DPUS_PER_RANK],
+                       info.symbol_offset, base_addrs[rank_id], length);
+    }
+
+    size_t RegisterBroadcastBuffer(uint8_t *buffer, std::string symbol_name,
+                                 uint32_t symbol_offset) {
         // Please make sure buffers don't overflow
         assert(DirectAvailable());
-
-        assert(GetSymbolOffset(symbol_name) & MRAM_ADDRESS_SPACE);
-        symbol_offset += GetSymbolOffset(symbol_name) ^ MRAM_ADDRESS_SPACE;
-
-        // Skip disabled PIM modules
-        uint8_t *buffers_alligned[MAX_NR_RANKS * MAX_NR_DPUS_PER_RANK];
-        {
-            uint32_t offset = 0;
-            for (uint32_t i = 0; i < nr_of_ranks; i++) {
-                for (int j = 0; j < MAX_NR_DPUS_PER_RANK; j++) {
-                    if (ranks[i]->dpus[j].enabled) {
-                        buffers_alligned[i * MAX_NR_DPUS_PER_RANK + j] =
-                            buffers[offset++];
-                    } else {
-                        buffers_alligned[i * MAX_NR_DPUS_PER_RANK + j] =
-                            nullptr;
-                    }
-                }
-            }
-            assert(offset == nr_of_dpus);
-        }
-
-        auto SendToIthRank = [&](size_t i) {
-            DPU_ASSERT(dpu_switch_mux_for_rank(ranks[i], true));
-            SendToRankMRAM(&buffers_alligned[i * MAX_NR_DPUS_PER_RANK],
-                           symbol_offset, base_addrs[i], length);
-        };
-
-        for (uint32_t i = 0; i < nr_of_ranks; i++) {
-            SendToIthRank(i);
-        }
-    }*/
-
-    void RegisterBufferForSendToPIM(uint8_t **buffers, std::string symbol_name,
-                                    uint32_t symbol_offset, uint32_t length) {
-        // Please make sure buffers don't overflow
-        assert(DirectAvailable());
+        BroadcastBufferInfo info;
+        info.buffer = buffer;
         uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
         assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        send_buffers_symbol_offset = symbol_offset + (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
-        // Skip disabled PIM modules
-        {
-            uint32_t offset = 0;
-            for (uint32_t i = 0; i < nr_of_ranks; i++) {
-                for (int j = 0; j < MAX_NR_DPUS_PER_RANK; j++) {
-                    if (ranks[i]->dpus[j].enabled) {
-                        send_buffers_aligned[i * MAX_NR_DPUS_PER_RANK + j] =
-                            buffers[offset++];
-                    } else {
-                        send_buffers_aligned[i * MAX_NR_DPUS_PER_RANK + j] =
-                            nullptr;
-                    }
-                }
-            }
-            assert(offset == nr_of_dpus);
-        }
-        send_buffers_length = length;
+        info.symbol_offset = symbol_offset + (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
+
+        size_t info_handle = broadcast_buffer_infos.size();
+        broadcast_buffer_infos.push_back(info);
+        return info_handle;
     }
 
-    void SendToPIMRank(uint32_t rank_id) {
+    void BroadcastToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
         DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
-        SendToRankMRAM(&send_buffers_aligned[rank_id * MAX_NR_DPUS_PER_RANK],
-                       send_buffers_symbol_offset, base_addrs[rank_id],
-                       send_buffers_length);
-    }
-
-    void RegisterBufferForBroadcastToPIM(uint8_t *buffer, std::string symbol_name,
-                                         uint32_t symbol_offset, uint32_t length) {
-        // Please make sure buffers don't overflow
-        assert(DirectAvailable());
-        uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
-        assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        broadcast_buffer_symbol_offset = symbol_offset + (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
-        broadcast_buffer = buffer;
-        broadcast_buffer_length = length;
-    }
-
-    void BroadcastToPIMRank(uint32_t rank_id) {
-        DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
-        BroadcastToRankMRAM(broadcast_buffer, 
-                            broadcast_buffer_symbol_offset, base_addrs[rank_id],
-                            broadcast_buffer_length);
+        BroadcastBufferInfo &info = broadcast_buffer_infos[info_handle];
+        BroadcastToRankMRAM(info.buffer,
+                            info.symbol_offset, base_addrs[rank_id], length);
     }
 
    private:
@@ -676,6 +585,9 @@ class DirectPIMInterface {
     uint8_t **base_addrs;
     dpu_program_t program;
     // map<std::string, uint32_t> offset_list;
+
+    std::vector<NormalBufferInfo> normal_buffer_infos;
+    std::vector<BroadcastBufferInfo> broadcast_buffer_infos;
 
     uint8_t *send_buffers_aligned[MAX_NR_RANKS * MAX_NR_DPUS_PER_RANK];
     uint32_t send_buffers_symbol_offset, send_buffers_length;

@@ -418,8 +418,19 @@ class DirectPIMInterface {
             return;
         }
 
+        LaunchAsync(rank_id);
+        LaunchAsyncWait(rank_id);
+    }
+
+    void LaunchAsync(uint32_t rank_id) {
+        assert(!debuggable);
         dpu_rank_t *rank = ranks[rank_id];
         DPU_ASSERT(ci_start_thread_rank(rank, DPU_BOOT_THREAD, false, NULL));
+    }
+
+    void LaunchAsyncWait(uint32_t rank_id) {
+        assert(!debuggable);
+        dpu_rank_t *rank = ranks[rank_id];
         dpu_slice_id_t ci_cnt = rank->description->hw.topology.nr_of_control_interfaces;
         dpu_bitfield_t dpu_poll_running[DPU_MAX_NR_CIS];
         dpu_bitfield_t dpu_poll_in_fault[DPU_MAX_NR_CIS];

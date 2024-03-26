@@ -20,6 +20,7 @@ extern "C" {
 #include <dpu_region_address_translation.h>
 #include <dpu_target_macros.h>
 #include <dpu_types.h>
+#include <ufi_ci_commands.h>
 #include <ufi_config.h>
 #include <ufi_runner.h>
 
@@ -59,6 +60,14 @@ typedef struct _dpu_props {
     unsigned int nr_properties;
     _dpu_properties_property_t properties;
 } * _dpu_props_t;
+
+typedef struct _hw_dpu_rank_context_t {
+    /* Hybrid mode: Address of control interfaces when memory mapped
+     * Perf mode:   Base region address, mappings deal with offset to target control interfaces
+     * Safe mode:   Buffer handed to the driver
+     */
+    uint64_t *control_interfaces;
+} * hw_dpu_rank_context_t;
 }
 
 const uint32_t MAX_NR_RANKS = 40;
@@ -86,6 +95,7 @@ class DirectPIMInterface {
         ranks = new dpu_rank_t *[nr_of_ranks];
         params = new hw_dpu_rank_allocation_parameters_t[nr_of_ranks];
         base_addrs = new uint8_t *[nr_of_ranks];
+        ci_addrs = new uint64_t *[nr_of_ranks];
         for (uint32_t i = 0; i < nr_of_ranks; i++) {
             ranks[i] = dpu_set.list.ranks[i];
             params[i] =
@@ -93,6 +103,13 @@ class DirectPIMInterface {
                                                            ->description
                                                            ->_internals.data));
             base_addrs[i] = params[i]->ptr_region;
+            ci_addrs[i] = (uint64_t*)((uint8_t*)(((hw_dpu_rank_context_t)ranks[i]->_internals)
+                                                        ->control_interfaces) + 0x20000);
+        }
+
+        for (int each_ci = 0; each_ci < DPU_MAX_NR_CIS; each_ci++) {
+            boot_structure_array[each_ci] = BOOT_STRUCTURE;
+            boot_frame_array[each_ci] = BOOT_FRAME;
         }
     }
 
@@ -425,7 +442,55 @@ class DirectPIMInterface {
     void LaunchAsync(uint32_t rank_id) {
         assert(!debuggable);
         dpu_rank_t *rank = ranks[rank_id];
-        DPU_ASSERT(ci_start_thread_rank(rank, DPU_BOOT_THREAD, false, NULL));
+
+        uint64_t *ci_write_addr = ci_addrs[rank_id];
+        //uint64_t *ci_read_addr = (uint64_t*)(((uint8_t*)ci_write_addr) + 32 * 1024);
+
+        // Write structure
+        dpu_control_interface_context *ci = &(rank->runtime.control_interface);
+        dpu_slice_id_t ci_cnt = rank->description->hw.topology.nr_of_control_interfaces;
+        bool do_write_structure = false;
+        //uint64_t cmd_wait_data_interleaved[8], cmd_wait_data[8];
+        for (dpu_slice_id_t each_slice = 0; each_slice < ci_cnt; ++each_slice) {
+            if (ci->slice_info[each_slice].structure_value != BOOT_STRUCTURE) {
+                ci->slice_info[each_slice].structure_value = BOOT_STRUCTURE;
+                do_write_structure = true;
+            }
+        }
+        if (do_write_structure) {
+            byte_interleave_avx2(boot_structure_array, ci_write_addr);
+            __builtin_ia32_clflushopt((void *)(ci_write_addr));
+
+            // wait until command ends
+            /*while (true) {
+                for (int i = 0; i < 3; i++) {
+                    __builtin_ia32_clflushopt((void*)ci_read_addr);
+                    __builtin_ia32_mfence();
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[0] = *(ci_read_addr + 0);
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[1] = *(ci_read_addr + 1);
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[2] = *(ci_read_addr + 2);
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[3] = *(ci_read_addr + 3);
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[4] = *(ci_read_addr + 4);
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[5] = *(ci_read_addr + 5);
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[6] = *(ci_read_addr + 6);
+                    ((volatile uint64_t *)cmd_wait_data_interleaved)[7] = *(ci_read_addr + 7);
+                }
+                byte_interleave_avx2(cmd_wait_data_interleaved, cmd_wait_data);
+                for (dpu_slice_id_t each_slice = 0; each_slice < ci_cnt; ++each_slice) {
+                    uint64_t result = cmd_wait_data[each_slice];
+                    const uint64_t result_mask = 0xFF0000FF00000000l;
+                    const uint64_t expected = 0x000000FF00000000l;
+                    if (((result & result_mask) != expected) && (result & CI_NOP) != CI_NOP) {
+                        continue;
+                    }
+                }
+                break;
+            }*/
+        }
+
+        // Write frame
+        byte_interleave_avx2(boot_frame_array, ci_write_addr);
+        __builtin_ia32_clflushopt((void *)(ci_write_addr));
     }
 
     void LaunchAsyncWait(uint32_t rank_id) {
@@ -594,8 +659,14 @@ class DirectPIMInterface {
     dpu_rank_t **ranks;
     hw_dpu_rank_allocation_parameters_t *params;
     uint8_t **base_addrs;
+    uint64_t **ci_addrs;
     dpu_program_t program;
     // map<std::string, uint32_t> offset_list;
+
+    const uint64_t BOOT_STRUCTURE = CI_THREAD_BOOT_STRUCT;
+    const uint64_t BOOT_FRAME = CI_THREAD_BOOT_FRAME(DPU_BOOT_THREAD);
+    uint64_t boot_structure_array[DPU_MAX_NR_CIS];
+    uint64_t boot_frame_array[DPU_MAX_NR_CIS];
 
     std::vector<NormalBufferInfo*> normal_buffer_infos;
     std::vector<BroadcastBufferInfo> broadcast_buffer_infos;

@@ -95,7 +95,6 @@ class DirectPIMInterface {
         ranks = new dpu_rank_t *[nr_of_ranks];
         params = new hw_dpu_rank_allocation_parameters_t[nr_of_ranks];
         base_addrs = new uint8_t *[nr_of_ranks];
-        ci_addrs = new uint64_t *[nr_of_ranks];
         for (uint32_t i = 0; i < nr_of_ranks; i++) {
             ranks[i] = dpu_set.list.ranks[i];
             params[i] =
@@ -103,13 +102,6 @@ class DirectPIMInterface {
                                                            ->description
                                                            ->_internals.data));
             base_addrs[i] = params[i]->ptr_region;
-            ci_addrs[i] = (uint64_t*)((uint8_t*)(((hw_dpu_rank_context_t)ranks[i]->_internals)
-                                                        ->control_interfaces) + 0x20000);
-        }
-
-        for (int each_ci = 0; each_ci < DPU_MAX_NR_CIS; each_ci++) {
-            boot_structure_array[each_ci] = BOOT_STRUCTURE;
-            boot_frame_array[each_ci] = BOOT_FRAME;
         }
     }
 
@@ -426,7 +418,7 @@ class DirectPIMInterface {
         }
     }
     
-    void Launch(uint32_t rank_id) {
+    void Launch(uint32_t rank_id, uint32_t sleep_us = 0) {
         // use default launch if you need the default "error handling"
         if (debuggable) {
             if (rank_id == 0) {
@@ -436,61 +428,21 @@ class DirectPIMInterface {
         }
 
         LaunchAsync(rank_id);
+        if (sleep_us > 0) usleep(sleep_us);
         LaunchAsyncWait(rank_id);
     }
 
     void LaunchAsync(uint32_t rank_id) {
         assert(!debuggable);
         dpu_rank_t *rank = ranks[rank_id];
+        //DPU_ASSERT(ci_start_thread_rank(rank, DPU_BOOT_THREAD, false, NULL));
+        //return;
 
-        uint64_t *ci_write_addr = ci_addrs[rank_id];
-        //uint64_t *ci_read_addr = (uint64_t*)(((uint8_t*)ci_write_addr) + 32 * 1024);
+        switch_mux_for(rank_id, false);
 
-        // Write structure
-        dpu_control_interface_context *ci = &(rank->runtime.control_interface);
-        dpu_slice_id_t ci_cnt = rank->description->hw.topology.nr_of_control_interfaces;
-        bool do_write_structure = false;
-        //uint64_t cmd_wait_data_interleaved[8], cmd_wait_data[8];
-        for (dpu_slice_id_t each_slice = 0; each_slice < ci_cnt; ++each_slice) {
-            if (ci->slice_info[each_slice].structure_value != BOOT_STRUCTURE) {
-                ci->slice_info[each_slice].structure_value = BOOT_STRUCTURE;
-                do_write_structure = true;
-            }
-        }
-        if (do_write_structure) {
-            byte_interleave_avx2(boot_structure_array, ci_write_addr);
-            __builtin_ia32_clflushopt((void *)(ci_write_addr));
-
-            // wait until command ends
-            /*while (true) {
-                for (int i = 0; i < 3; i++) {
-                    __builtin_ia32_clflushopt((void*)ci_read_addr);
-                    __builtin_ia32_mfence();
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[0] = *(ci_read_addr + 0);
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[1] = *(ci_read_addr + 1);
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[2] = *(ci_read_addr + 2);
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[3] = *(ci_read_addr + 3);
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[4] = *(ci_read_addr + 4);
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[5] = *(ci_read_addr + 5);
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[6] = *(ci_read_addr + 6);
-                    ((volatile uint64_t *)cmd_wait_data_interleaved)[7] = *(ci_read_addr + 7);
-                }
-                byte_interleave_avx2(cmd_wait_data_interleaved, cmd_wait_data);
-                for (dpu_slice_id_t each_slice = 0; each_slice < ci_cnt; ++each_slice) {
-                    uint64_t result = cmd_wait_data[each_slice];
-                    const uint64_t result_mask = 0xFF0000FF00000000l;
-                    const uint64_t expected = 0x000000FF00000000l;
-                    if (((result & result_mask) != expected) && (result & CI_NOP) != CI_NOP) {
-                        continue;
-                    }
-                }
-                break;
-            }*/
-        }
-
-        // Write frame
-        byte_interleave_avx2(boot_frame_array, ci_write_addr);
-        __builtin_ia32_clflushopt((void *)(ci_write_addr));
+        uint8_t ci_mask = ALL_CIS;
+        DPU_ASSERT((dpu_error_t)ufi_select_all(rank, &ci_mask));
+        DPU_ASSERT((dpu_error_t)ufi_thread_boot(rank, ci_mask, DPU_BOOT_THREAD, NULL));
     }
 
     void LaunchAsyncWait(uint32_t rank_id) {
@@ -564,14 +516,16 @@ class DirectPIMInterface {
     }
 
     void ReceiveFromPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
-        DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
+        //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
+        switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         ReceiveFromRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
                             info->symbol_offset, base_addrs[rank_id], length);
     }
 
     void SendToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
-        DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
+        //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
+        switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         SendToRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
                        info->symbol_offset, base_addrs[rank_id], length);
@@ -593,7 +547,8 @@ class DirectPIMInterface {
     }
 
     void BroadcastToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
-        DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
+        //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
+        switch_mux_for(rank_id, true);
         BroadcastBufferInfo &info = broadcast_buffer_infos[info_handle];
         BroadcastToRankMRAM(info.buffer,
                             info.symbol_offset, base_addrs[rank_id], length);
@@ -645,6 +600,71 @@ class DirectPIMInterface {
         _mm256_storeu_si256((__m256i *)&dst1[32], final1);
     }
 
+    void switch_mux_for(int rank_id, bool set_mux_for_host) {
+        dpu_rank_t *rank = ranks[rank_id];
+
+        //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], set_mux_for_host));
+        //return;
+
+        uint8_t nr_cis = rank->description->hw.topology.nr_of_control_interfaces;
+        uint8_t nr_dpus_per_ci = rank->description->hw.topology.nr_of_dpus_per_control_interface;
+
+        bool switch_mux = false;
+        for (uint8_t each_slice = 0; each_slice < nr_cis; each_slice++) {
+            if ((set_mux_for_host &&
+		         __builtin_popcount(rank->runtime.control_interface
+		    				.slice_info[each_slice]
+		    				.host_mux_mram_state) <
+		    	     nr_dpus_per_ci) ||
+		        (!set_mux_for_host &&
+		         rank->runtime.control_interface.slice_info[each_slice]
+		    	     .host_mux_mram_state)) {
+		    	switch_mux = true;
+		    	break;
+		    }
+        }
+        if (!switch_mux) {
+            return;
+        }
+
+        for (uint8_t each_slice = 0; each_slice < nr_cis; each_slice++) {
+            rank->runtime.control_interface.slice_info[each_slice]
+                .host_mux_mram_state =
+                set_mux_for_host ? (1 << nr_dpus_per_ci) - 1 : 0x0;
+        }
+
+        uint8_t ci_mask = ALL_CIS;
+        DPU_ASSERT((dpu_error_t)ufi_select_all_even_disabled(rank, &ci_mask));
+	    DPU_ASSERT((dpu_error_t)ufi_set_mram_mux(rank, ci_mask, set_mux_for_host ? 0xFF : 0x0));
+        
+        // wait for 50us?
+        usleep(50);
+
+        // dpu_check_wavegen_mux_status_for_rank
+        DPU_ASSERT((dpu_error_t)ufi_write_dma_ctrl(rank, ci_mask, 0xFF, 0x02));
+        DPU_ASSERT((dpu_error_t)ufi_clear_dma_ctrl(rank, ci_mask));
+        uint8_t result_array[DPU_MAX_NR_CIS];
+        uint8_t wavegen_expected = set_mux_for_host ? 0x00 : ((1 << 0) | (1 << 1));
+        for (uint8_t each_dpu = 0; each_dpu < nr_dpus_per_ci; each_dpu++) {
+            uint32_t timeout = 100;
+            bool should_retry = false;
+            uint8_t mask = ci_mask;
+            do {
+                DPU_ASSERT((dpu_error_t)ufi_read_dma_ctrl(rank, mask, result_array));
+
+                for (uint8_t each_slice = 0; each_slice < nr_cis; each_slice++) {
+                    if (!CI_MASK_ON(mask, each_slice)) continue;
+                    if ((result_array[each_slice] & 0x7B) != wavegen_expected) {
+                        should_retry = true;
+                        break;
+                    }
+                }
+
+                timeout--;
+            } while (timeout && should_retry);
+        }
+    }
+
    public:
     uint32_t GetNrOfRanks() const { return nr_of_ranks; }
     uint32_t GetNrOfDPUs() const { return nr_of_dpus; }
@@ -659,14 +679,8 @@ class DirectPIMInterface {
     dpu_rank_t **ranks;
     hw_dpu_rank_allocation_parameters_t *params;
     uint8_t **base_addrs;
-    uint64_t **ci_addrs;
     dpu_program_t program;
     // map<std::string, uint32_t> offset_list;
-
-    const uint64_t BOOT_STRUCTURE = CI_THREAD_BOOT_STRUCT;
-    const uint64_t BOOT_FRAME = CI_THREAD_BOOT_FRAME(DPU_BOOT_THREAD);
-    uint64_t boot_structure_array[DPU_MAX_NR_CIS];
-    uint64_t boot_frame_array[DPU_MAX_NR_CIS];
 
     std::vector<NormalBufferInfo*> normal_buffer_infos;
     std::vector<BroadcastBufferInfo> broadcast_buffer_infos;

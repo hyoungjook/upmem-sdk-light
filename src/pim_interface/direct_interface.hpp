@@ -272,8 +272,10 @@ class DirectPIMInterface {
                     cache_line[j] =
                         *(((uint64_t *)buffers[j * 8 + dpu_id]) + i);
                 }
-                byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
-                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                // avx512 is faster (due to stream writes?)
+                byte_interleave_avx512(cache_line, (uint64_t *)(ptr_dest + offset), true);
+                //byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
 
                 offset += 0x40;
                 for (int j = 0; j < 8; j++) {
@@ -283,8 +285,9 @@ class DirectPIMInterface {
                     cache_line[j] =
                         *(((uint64_t *)buffers[j * 8 + dpu_id + 4]) + i);
                 }
-                byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
-                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                byte_interleave_avx512(cache_line, (uint64_t *)(ptr_dest + offset), true);
+                //byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
             }
         }
         __builtin_ia32_mfence();
@@ -310,12 +313,14 @@ class DirectPIMInterface {
                 uint64_t offset =
                     GetCorrectOffsetMRAM(symbol_offset + (i * 8), dpu_id);
                 
-                byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
-                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                byte_interleave_avx512_bc(cache_value, (uint64_t*)(ptr_dest + offset), true);
+                //byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
+                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
 
                 offset += 0x40;
-                byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
-                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                byte_interleave_avx512_bc(cache_value, (uint64_t*)(ptr_dest + offset), true);
+                //byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
+                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
             }
         }
 
@@ -598,6 +603,64 @@ class DirectPIMInterface {
 
         _mm256_storeu_si256((__m256i *)&dst1[0], final0);
         _mm256_storeu_si256((__m256i *)&dst1[32], final1);
+    }
+
+    void byte_interleave_avx512(uint64_t *input, uint64_t *output,
+                                bool use_stream) {
+        __m512i mask;
+
+        mask = _mm512_set_epi64(0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL,
+
+                                0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL,
+
+                                0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL,
+
+                                0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL);
+
+        __m512i vindex = _mm512_setr_epi32(0, 8, 16, 24, 32, 40, 48, 56, 4, 12,
+                                           20, 28, 36, 44, 52, 60);
+        __m512i perm = _mm512_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7, 8, 12, 9, 13,
+                                         10, 14, 11, 15);
+
+        __m512i load = _mm512_i32gather_epi32(vindex, input, 1);
+        __m512i transpose = _mm512_shuffle_epi8(load, mask);
+        __m512i final = _mm512_permutexvar_epi32(perm, transpose);
+
+        if (use_stream) {
+            _mm512_stream_si512((__m512i *)output, final);
+            return;
+        }
+
+        _mm512_storeu_si512((__m512i *)output, final);
+    }
+
+    void byte_interleave_avx512_bc(uint64_t input_val, uint64_t *output,
+                                   bool use_stream) {
+        __m512i mask;
+
+        mask = _mm512_set_epi64(0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL,
+
+                                0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL,
+
+                                0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL,
+
+                                0x0f0b07030e0a0602ULL, 0x0d0905010c080400ULL);
+
+        __m512i vindex = _mm512_setr_epi32(0, 0, 0, 0, 0, 0, 0, 0, 4, 4,
+                                           4, 4, 4, 4, 4, 4);
+        __m512i perm = _mm512_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7, 8, 12, 9, 13,
+                                         10, 14, 11, 15);
+
+        __m512i load = _mm512_i32gather_epi32(vindex, &input_val, 1);
+        __m512i transpose = _mm512_shuffle_epi8(load, mask);
+        __m512i final = _mm512_permutexvar_epi32(perm, transpose);
+
+        if (use_stream) {
+            _mm512_stream_si512((__m512i *)output, final);
+            return;
+        }
+
+        _mm512_storeu_si512((__m512i *)output, final);
     }
 
     void switch_mux_for(int rank_id, bool set_mux_for_host) {

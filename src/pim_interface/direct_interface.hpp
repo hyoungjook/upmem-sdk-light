@@ -433,7 +433,7 @@ class DirectPIMInterface {
         }
 
         LaunchAsync(rank_id);
-        if (sleep_us > 0) usleep(sleep_us);
+        //if (sleep_us > 0) usleep(sleep_us);
         LaunchAsyncWait(rank_id);
     }
 
@@ -469,6 +469,7 @@ class DirectPIMInterface {
             if (done_cnt == ci_cnt) {
                 break;
             }
+            //usleep(10);
         }
     }
 
@@ -701,7 +702,7 @@ class DirectPIMInterface {
 	    DPU_ASSERT((dpu_error_t)ufi_set_mram_mux(rank, ci_mask, set_mux_for_host ? 0xFF : 0x0));
         
         // wait for 50us?
-        usleep(50);
+        //usleep(50);
 
         // dpu_check_wavegen_mux_status_for_rank
         DPU_ASSERT((dpu_error_t)ufi_write_dma_ctrl(rank, ci_mask, 0xFF, 0x02));
@@ -724,6 +725,7 @@ class DirectPIMInterface {
                 }
 
                 timeout--;
+                //usleep(1);
             } while (timeout && should_retry);
         }
     }

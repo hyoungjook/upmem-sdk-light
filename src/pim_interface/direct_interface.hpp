@@ -70,6 +70,10 @@ typedef struct _hw_dpu_rank_context_t {
 } * hw_dpu_rank_context_t;
 }
 
+#ifdef __AVX512F__
+#define USE_AVX512
+#endif
+
 const uint32_t MAX_NR_RANKS = 40;
 const uint32_t DPU_PER_RANK = 64;
 const uint64_t MRAM_SIZE = (64 << 20);
@@ -273,9 +277,12 @@ class DirectPIMInterface {
                         *(((uint64_t *)buffers[j * 8 + dpu_id]) + i);
                 }
                 // avx512 is faster (due to stream writes?)
+                #ifdef USE_AVX512
                 byte_interleave_avx512(cache_line, (uint64_t *)(ptr_dest + offset), true);
-                //byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
-                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #else
+                byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #endif
 
                 offset += 0x40;
                 for (int j = 0; j < 8; j++) {
@@ -285,9 +292,12 @@ class DirectPIMInterface {
                     cache_line[j] =
                         *(((uint64_t *)buffers[j * 8 + dpu_id + 4]) + i);
                 }
+                #ifdef USE_AVX512
                 byte_interleave_avx512(cache_line, (uint64_t *)(ptr_dest + offset), true);
-                //byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
-                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #else
+                byte_interleave_avx2(cache_line, (uint64_t *)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #endif
             }
         }
         __builtin_ia32_mfence();
@@ -313,14 +323,20 @@ class DirectPIMInterface {
                 uint64_t offset =
                     GetCorrectOffsetMRAM(symbol_offset + (i * 8), dpu_id);
                 
+                #ifdef USE_AVX512
                 byte_interleave_avx512_bc(cache_value, (uint64_t*)(ptr_dest + offset), true);
-                //byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
-                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #else
+                byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #endif
 
                 offset += 0x40;
+                #ifdef USE_AVX512
                 byte_interleave_avx512_bc(cache_value, (uint64_t*)(ptr_dest + offset), true);
-                //byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
-                //__builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #else
+                byte_interleave_avx2_bc(cache_value, (uint64_t*)(ptr_dest + offset));
+                __builtin_ia32_clflushopt((void *)(ptr_dest + offset));
+                #endif
             }
         }
 
@@ -423,7 +439,7 @@ class DirectPIMInterface {
         }
     }
     
-    void Launch(uint32_t rank_id, uint32_t sleep_us = 0) {
+    void Launch(uint32_t rank_id) {
         // use default launch if you need the default "error handling"
         if (debuggable) {
             if (rank_id == 0) {
@@ -433,7 +449,6 @@ class DirectPIMInterface {
         }
 
         LaunchAsync(rank_id);
-        //if (sleep_us > 0) usleep(sleep_us);
         LaunchAsyncWait(rank_id);
     }
 
@@ -490,15 +505,14 @@ class DirectPIMInterface {
         uint32_t symbol_offset;
     };
 
-    size_t RegisterNormalBuffer(uint8_t **buffers, std::string symbol_name,
-                                uint32_t symbol_offset) {
+    size_t RegisterNormalBuffer(uint8_t **buffers, std::string symbol_name) {
         // Please make sure buffers don't overflow
         assert(DirectAvailable());
 
         NormalBufferInfo *info = new NormalBufferInfo;
         uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
         assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        info->symbol_offset = symbol_offset + (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
+        info->symbol_offset = (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
         // Skip disabled PIM modules
         {
             uint32_t offset = 0;
@@ -521,43 +535,42 @@ class DirectPIMInterface {
         return info_handle;
     }
 
-    void ReceiveFromPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
+    void ReceiveFromPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
         switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         ReceiveFromRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
-                            info->symbol_offset, base_addrs[rank_id], length);
+                            info->symbol_offset + symbol_offset, base_addrs[rank_id], length);
     }
 
-    void SendToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
+    void SendToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
         switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         SendToRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
-                       info->symbol_offset, base_addrs[rank_id], length);
+                       info->symbol_offset + symbol_offset, base_addrs[rank_id], length);
     }
 
-    size_t RegisterBroadcastBuffer(uint8_t *buffer, std::string symbol_name,
-                                 uint32_t symbol_offset) {
+    size_t RegisterBroadcastBuffer(uint8_t *buffer, std::string symbol_name) {
         // Please make sure buffers don't overflow
         assert(DirectAvailable());
         BroadcastBufferInfo info;
         info.buffer = buffer;
         uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
         assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        info.symbol_offset = symbol_offset + (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
+        info.symbol_offset = (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
 
         size_t info_handle = broadcast_buffer_infos.size();
         broadcast_buffer_infos.push_back(info);
         return info_handle;
     }
 
-    void BroadcastToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
+    void BroadcastToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
         switch_mux_for(rank_id, true);
         BroadcastBufferInfo &info = broadcast_buffer_infos[info_handle];
         BroadcastToRankMRAM(info.buffer,
-                            info.symbol_offset, base_addrs[rank_id], length);
+                            info.symbol_offset + symbol_offset, base_addrs[rank_id], length);
     }
 
    private:
@@ -606,6 +619,7 @@ class DirectPIMInterface {
         _mm256_storeu_si256((__m256i *)&dst1[32], final1);
     }
 
+    #ifdef USE_AVX512
     void byte_interleave_avx512(uint64_t *input, uint64_t *output,
                                 bool use_stream) {
         __m512i mask;
@@ -663,6 +677,7 @@ class DirectPIMInterface {
 
         _mm512_storeu_si512((__m512i *)output, final);
     }
+    #endif
 
     void switch_mux_for(int rank_id, bool set_mux_for_host) {
         dpu_rank_t *rank = ranks[rank_id];

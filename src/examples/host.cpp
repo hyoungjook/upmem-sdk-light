@@ -36,21 +36,21 @@ int main() {
         output_buf[i] = new uint8_t[OUT_BUFFER_SIZE];
     }
 
-    size_t BROADCAST_HANDLE = pimInterface.RegisterBroadcastBuffer(broadcast_buf, "broadcast_buf", 0);
-    size_t SEND_HANDLE = pimInterface.RegisterNormalBuffer(input_buf, "input_buf", 0);
-    size_t RECV_HANDLE = pimInterface.RegisterNormalBuffer(output_buf, "output_buf", 0);
+    size_t BROADCAST_HANDLE = pimInterface.RegisterBroadcastBuffer(broadcast_buf, "broadcast_buf");
+    size_t SEND_HANDLE = pimInterface.RegisterNormalBuffer(input_buf, "input_buf");
+    size_t RECV_HANDLE = pimInterface.RegisterNormalBuffer(output_buf, "output_buf");
 
     // CPU -> PIM.MRAM broadcast
-    pimInterface.BroadcastToPIMRank(0, BROADCAST_HANDLE, 8);
+    pimInterface.BroadcastToPIMRank(0, BROADCAST_HANDLE, 0, 8);
 
     // CPU -> PIM.MRAM : Supported by both direct and UPMEM interface.
-    pimInterface.SendToPIMRank(0, SEND_HANDLE, BUFFER_SIZE);
+    pimInterface.SendToPIMRank(0, SEND_HANDLE, 0, BUFFER_SIZE);
 
     // Execute
     pimInterface.Launch(0);
 
     // PIM.MRAM -> CPU : Supported by both direct and UPMEM interface.
-    pimInterface.ReceiveFromPIMRank(0, RECV_HANDLE, 8);
+    pimInterface.ReceiveFromPIMRank(0, RECV_HANDLE, 0, 8);
 
     //pimInterface.PrintLog();
 

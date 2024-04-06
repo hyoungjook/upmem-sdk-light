@@ -438,6 +438,10 @@ class DirectPIMInterface {
             }
         }
     }
+
+    void SwitchMux(int rank_id, bool set_mux_for_host) {
+        switch_mux_for(rank_id, set_mux_for_host);
+    }
     
     void Launch(uint32_t rank_id) {
         // use default launch if you need the default "error handling"
@@ -458,7 +462,7 @@ class DirectPIMInterface {
         //DPU_ASSERT(ci_start_thread_rank(rank, DPU_BOOT_THREAD, false, NULL));
         //return;
 
-        switch_mux_for(rank_id, false);
+        //switch_mux_for(rank_id, false);
 
         uint8_t ci_mask = ALL_CIS;
         DPU_ASSERT((dpu_error_t)ufi_select_all(rank, &ci_mask));
@@ -537,7 +541,7 @@ class DirectPIMInterface {
 
     void ReceiveFromPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
-        switch_mux_for(rank_id, true);
+        //switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         ReceiveFromRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
                             info->symbol_offset + symbol_offset, base_addrs[rank_id], length);
@@ -545,7 +549,7 @@ class DirectPIMInterface {
 
     void SendToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
-        switch_mux_for(rank_id, true);
+        //switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         SendToRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
                        info->symbol_offset + symbol_offset, base_addrs[rank_id], length);
@@ -567,7 +571,7 @@ class DirectPIMInterface {
 
     void BroadcastToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
-        switch_mux_for(rank_id, true);
+        //switch_mux_for(rank_id, true);
         BroadcastBufferInfo &info = broadcast_buffer_infos[info_handle];
         BroadcastToRankMRAM(info.buffer,
                             info.symbol_offset + symbol_offset, base_addrs[rank_id], length);

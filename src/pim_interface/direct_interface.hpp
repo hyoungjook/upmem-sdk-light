@@ -442,6 +442,18 @@ class DirectPIMInterface {
     void SwitchMux(int rank_id, bool set_mux_for_host) {
         switch_mux_for(rank_id, set_mux_for_host);
     }
+
+    bool SwitchMuxRequired(int rank_id, bool set_mux_for_host) {
+        return switch_mux_for_required(rank_id, set_mux_for_host);
+    }
+
+    void SwitchMuxForStart(int rank_id, bool set_mux_for_host) {
+        switch_mux_for_start(rank_id, set_mux_for_host);
+    }
+
+    void SwitchMuxForSync(int rank_id, bool set_mux_for_host) {
+        switch_mux_for_sync(rank_id, set_mux_for_host);
+    }
     
     void Launch(uint32_t rank_id) {
         // use default launch if you need the default "error handling"
@@ -684,14 +696,17 @@ class DirectPIMInterface {
     #endif
 
     void switch_mux_for(int rank_id, bool set_mux_for_host) {
-        dpu_rank_t *rank = ranks[rank_id];
-
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], set_mux_for_host));
         //return;
+        if (!switch_mux_for_required(rank_id, set_mux_for_host)) return;
+        switch_mux_for_start(rank_id, set_mux_for_host);
+        switch_mux_for_sync(rank_id, set_mux_for_host);
+    }
 
+    bool switch_mux_for_required(int rank_id, bool set_mux_for_host) {
+        dpu_rank_t *rank = ranks[rank_id];
         uint8_t nr_cis = rank->description->hw.topology.nr_of_control_interfaces;
         uint8_t nr_dpus_per_ci = rank->description->hw.topology.nr_of_dpus_per_control_interface;
-
         bool switch_mux = false;
         for (uint8_t each_slice = 0; each_slice < nr_cis; each_slice++) {
             if ((set_mux_for_host &&
@@ -706,10 +721,13 @@ class DirectPIMInterface {
 		    	break;
 		    }
         }
-        if (!switch_mux) {
-            return;
-        }
+        return switch_mux;
+    }
 
+    void switch_mux_for_start(int rank_id, bool set_mux_for_host) {
+        dpu_rank_t *rank = ranks[rank_id];
+        uint8_t nr_cis = rank->description->hw.topology.nr_of_control_interfaces;
+        uint8_t nr_dpus_per_ci = rank->description->hw.topology.nr_of_dpus_per_control_interface;
         for (uint8_t each_slice = 0; each_slice < nr_cis; each_slice++) {
             rank->runtime.control_interface.slice_info[each_slice]
                 .host_mux_mram_state =
@@ -719,10 +737,13 @@ class DirectPIMInterface {
         uint8_t ci_mask = ALL_CIS;
         DPU_ASSERT((dpu_error_t)ufi_select_all_even_disabled(rank, &ci_mask));
 	    DPU_ASSERT((dpu_error_t)ufi_set_mram_mux(rank, ci_mask, set_mux_for_host ? 0xFF : 0x0));
-        
-        // wait for 50us?
-        //usleep(50);
+    }
 
+    void switch_mux_for_sync(int rank_id, bool set_mux_for_host) {
+        dpu_rank_t *rank = ranks[rank_id];
+        uint8_t nr_cis = rank->description->hw.topology.nr_of_control_interfaces;
+        uint8_t nr_dpus_per_ci = rank->description->hw.topology.nr_of_dpus_per_control_interface;
+        uint8_t ci_mask = ALL_CIS;
         // dpu_check_wavegen_mux_status_for_rank
         DPU_ASSERT((dpu_error_t)ufi_write_dma_ctrl(rank, ci_mask, 0xFF, 0x02));
         DPU_ASSERT((dpu_error_t)ufi_clear_dma_ctrl(rank, ci_mask));

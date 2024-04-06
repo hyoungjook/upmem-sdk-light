@@ -509,14 +509,14 @@ class DirectPIMInterface {
         uint32_t symbol_offset;
     };
 
-    size_t RegisterNormalBuffer(uint8_t **buffers, std::string symbol_name) {
+    size_t RegisterNormalBuffer(uint8_t **buffers, std::string symbol_name, uint32_t symbol_offset) {
         // Please make sure buffers don't overflow
         assert(DirectAvailable());
 
         NormalBufferInfo *info = new NormalBufferInfo;
         uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
         assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        info->symbol_offset = (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
+        info->symbol_offset = (symbol_base_offset ^ MRAM_ADDRESS_SPACE) + symbol_offset;
         // Skip disabled PIM modules
         {
             uint32_t offset = 0;
@@ -539,42 +539,42 @@ class DirectPIMInterface {
         return info_handle;
     }
 
-    void ReceiveFromPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
+    void ReceiveFromPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
         //switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         ReceiveFromRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
-                            info->symbol_offset + symbol_offset, base_addrs[rank_id], length);
+                            info->symbol_offset, base_addrs[rank_id], length);
     }
 
-    void SendToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
+    void SendToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
         //switch_mux_for(rank_id, true);
         NormalBufferInfo *info = normal_buffer_infos[info_handle];
         SendToRankMRAM(&info->buffers[rank_id * MAX_NR_DPUS_PER_RANK],
-                       info->symbol_offset + symbol_offset, base_addrs[rank_id], length);
+                       info->symbol_offset, base_addrs[rank_id], length);
     }
 
-    size_t RegisterBroadcastBuffer(uint8_t *buffer, std::string symbol_name) {
+    size_t RegisterBroadcastBuffer(uint8_t *buffer, std::string symbol_name, uint32_t symbol_offset) {
         // Please make sure buffers don't overflow
         assert(DirectAvailable());
         BroadcastBufferInfo info;
         info.buffer = buffer;
         uint32_t symbol_base_offset = GetSymbolOffset(symbol_name);
         assert(symbol_base_offset & MRAM_ADDRESS_SPACE);
-        info.symbol_offset = (symbol_base_offset ^ MRAM_ADDRESS_SPACE);
+        info.symbol_offset = (symbol_base_offset ^ MRAM_ADDRESS_SPACE) + symbol_offset;
 
         size_t info_handle = broadcast_buffer_infos.size();
         broadcast_buffer_infos.push_back(info);
         return info_handle;
     }
 
-    void BroadcastToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t symbol_offset, uint32_t length) {
+    void BroadcastToPIMRank(uint32_t rank_id, size_t info_handle, uint32_t length) {
         //DPU_ASSERT(dpu_switch_mux_for_rank(ranks[rank_id], true));
         //switch_mux_for(rank_id, true);
         BroadcastBufferInfo &info = broadcast_buffer_infos[info_handle];
         BroadcastToRankMRAM(info.buffer,
-                            info.symbol_offset + symbol_offset, base_addrs[rank_id], length);
+                            info.symbol_offset, base_addrs[rank_id], length);
     }
 
    private:
